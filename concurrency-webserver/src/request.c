@@ -1,17 +1,18 @@
 #include "io_helper.h"
 #include "request.h"
-#include <stdbool.h>
+
 //
 // Some of this code stolen from Bryant/O'Halloran
 // Hopefully this is not a problem ... :)
 //
 
+#define MAXBUF (8192)
 
 void request_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
-    char buf[MAXBUF+512], body[MAXBUF+512];
+    char buf[MAXBUF], body[MAXBUF];
     
     // Create the body of error message first (have to know its length for header)
-    snprintf(buf, sizeof(buf), 
+    sprintf(body, ""
 	    "<!doctype html>\r\n"
 	    "<head>\r\n"
 	    "  <title>OSTEP WebServer Error</title>\r\n"
@@ -44,7 +45,7 @@ void request_read_headers(int fd) {
     
     readline_or_die(fd, buf, MAXBUF);
     while (strcmp(buf, "\r\n")) {
-	    readline_or_die(fd, buf, MAXBUF);
+	readline_or_die(fd, buf, MAXBUF);
     }
     return;
 }
@@ -104,18 +105,18 @@ void request_serve_dynamic(int fd, char *filename, char *cgiargs) {
     write_or_die(fd, buf, strlen(buf));
     
     if (fork_or_die() == 0) {                        // child
-	    setenv_or_die("QUERY_STRING", cgiargs, 1);   // args to cgi go here
-	    dup2_or_die(fd, STDOUT_FILENO);              // make cgi writes go to socket (not screen)
-	    extern char **environ;                       // defined by libc 
-	    execve_or_die(filename, argv, environ);
+	setenv_or_die("QUERY_STRING", cgiargs, 1);   // args to cgi go here
+	dup2_or_die(fd, STDOUT_FILENO);              // make cgi writes go to socket (not screen)
+	extern char **environ;                       // defined by libc 
+	execve_or_die(filename, argv, environ);
     } else {
-	    wait_or_die(NULL);
+	wait_or_die(NULL);
     }
 }
 
 void request_serve_static(int fd, char *filename, int filesize) {
     int srcfd;
-    char *srcp, filetype[MAXBUF], buf[MAXBUF+512];
+    char *srcp, filetype[MAXBUF], buf[MAXBUF];
     
     request_get_filetype(filename, filetype);
     srcfd = open_or_die(filename, O_RDONLY, 0);
@@ -126,12 +127,12 @@ void request_serve_static(int fd, char *filename, int filesize) {
     close_or_die(srcfd);
     
     // put together response
-    snprintf(buf, sizeof(buf), 
-        "HTTP/1.0 200 OK\r\n"
-        "Server: OSTEP WebServer\r\n"
-        "Content-Length: %d\r\n"
-        "Content-Type: %s\r\n\r\n", 
-        filesize, filetype);
+    sprintf(buf, ""
+	    "HTTP/1.0 200 OK\r\n"
+	    "Server: OSTEP WebServer\r\n"
+	    "Content-Length: %d\r\n"
+	    "Content-Type: %s\r\n\r\n", 
+	    filesize, filetype);
     
     write_or_die(fd, buf, strlen(buf));
     
@@ -141,57 +142,39 @@ void request_serve_static(int fd, char *filename, int filesize) {
 }
 
 // handle a request
-void request_handle(request_t *req) {
-    if (req->is_static) {
-	    request_serve_static(req->conn_fd, req->filename, req->file_size);
-    } else {
-	    request_serve_dynamic(req->conn_fd, req->filename, req->cgiargs);
-    }
-}
-
-int parse_request_metadata(request_t *req){
-    int fd = req->conn_fd;    
+void request_handle(int fd) {
     int is_static;
     struct stat sbuf;
     char buf[MAXBUF], method[MAXBUF], uri[MAXBUF], version[MAXBUF];
-
+    char filename[MAXBUF], cgiargs[MAXBUF];
+    
     readline_or_die(fd, buf, MAXBUF);
     sscanf(buf, "%s %s %s", method, uri, version);
-    printf("Master: method:%s uri:%s version:%s\n", method, uri, version);
+    printf("method:%s uri:%s version:%s\n", method, uri, version);
     
     if (strcasecmp(method, "GET")) {
-	    request_error(fd, method, "501", "Not Implemented", "server does not implement this method");
-	    return -1;
+	request_error(fd, method, "501", "Not Implemented", "server does not implement this method");
+	return;
     }
     request_read_headers(fd);
-
-    is_static = request_parse_uri(uri, req->filename, req->cgiargs);
-
-    if (stat(req->filename, &sbuf) < 0) {
-	    request_error(fd, req->filename, "404", "Not found", "server could not find this file");
-	    return -1;
+    
+    is_static = request_parse_uri(uri, filename, cgiargs);
+    if (stat(filename, &sbuf) < 0) {
+	request_error(fd, filename, "404", "Not found", "server could not find this file");
+	return;
     }
     
     if (is_static) {
-	    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
-	        request_error(fd, req->filename, "403", "Forbidden", "server could not read this file");
-	        return -1;
-	    }
-        req->is_static = true;
-        req->file_size = sbuf.st_size; 
+	if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
+	    request_error(fd, filename, "403", "Forbidden", "server could not read this file");
+	    return;
+	}
+	request_serve_static(fd, filename, sbuf.st_size);
     } else {
-	    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
-	        request_error(fd, req->filename, "403", "Forbidden", "server could not run this CGI program");
-	        return -1;
-	    }
+	if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
+	    request_error(fd, filename, "403", "Forbidden", "server could not run this CGI program");
+	    return;
+	}
+	request_serve_dynamic(fd, filename, cgiargs);
     }
-    return 0;
-}
-
-void init_request(request_t *req){
-    req->is_static = false;
-    req->file_size = 0;
-    req->conn_fd = -1;
-    req->filename[0] = '\0';
-    req->cgiargs[0] = '\0';
 }

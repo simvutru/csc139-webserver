@@ -27,17 +27,14 @@
 // Send an HTTP request for the specified file 
 //
 void client_send(int fd, char *filename) {
-    char buf[MAXBUF+512];
+    char buf[MAXBUF];
     char hostname[MAXBUF];
     
     gethostname_or_die(hostname, MAXBUF);
     
     /* Form and send the HTTP request */
-    snprintf(buf, sizeof(buf), 
-            "GET %s HTTP/1.1\n"
-            "host: %s\n\r\n", 
-            filename, hostname);
-    
+    sprintf(buf, "GET %s HTTP/1.1\n", filename);
+    sprintf(buf, "%shost: %s\n\r\n", buf, hostname);
     write_or_die(fd, buf, strlen(buf));
 }
 
